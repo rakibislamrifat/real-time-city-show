@@ -1,0 +1,101 @@
+<?php
+/**
+ * Plugin Name: DevSeller Detect City (Combined)
+ * Description: Detect user IP (server fallback) + precise location (browser GPS) and display it in the [Stadtname] shortcode.
+ * Version: 1.1
+ * Author: Devseller, Rakib Islam Rifat
+ * Text Domain: devseller-detect-city
+ */
+
+// Register shortcode on init
+add_action('init', function() {
+    add_shortcode('Stadtname', 'devseller_combined_detect_city_shortcode');
+});
+
+// Get user IP address
+function devseller_get_user_ip() {
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        $ip = $_SERVER['HTTP_X_FORWARDED_FOR'];
+    } elseif (!empty($_SERVER['HTTP_CLIENT_IP'])) {
+        $ip = $_SERVER['HTTP_CLIENT_IP'];
+    } else {
+        $ip = $_SERVER['REMOTE_ADDR'];
+    }
+    return $ip;
+}
+
+// IP-based fallback city
+function devseller_get_city_from_ip() {
+    $user_ip = devseller_get_user_ip();
+
+    if ($user_ip === '127.0.0.1' || $user_ip === '::1' || strpos($user_ip, '192.168.') === 0) {
+        $user_ip = '8.8.8.8'; // Google DNS for local test
+    }
+
+    $access_key = 'C0tVbJx7gkIY0Jo';
+    $geo_url = "https://pro.ip-api.com/csv/{$user_ip}?key={$access_key}&fields=city";
+
+    $response = wp_remote_get($geo_url);
+
+    if (is_wp_error($response)) {
+        return __('City not found', 'devseller-detect-city');
+    }
+
+    $body = wp_remote_retrieve_body($response);
+    $data = explode(',', $body);
+
+    if (!empty($data[0]) && $data[0] !== 'fail') {
+        return trim($data[0]);
+    }
+
+    return __('City not found', 'devseller-detect-city');
+}
+
+// Combined shortcode output
+function devseller_combined_detect_city_shortcode() {
+    $fallback_city = devseller_get_city_from_ip();
+    // Generate a unique ID each time
+    $unique_id = uniqid('devseller-city-');
+    ob_start();
+    ?>
+    <span id="<?php echo esc_attr($unique_id); ?>"><?php echo esc_html($fallback_city); ?></span>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const cityElement = document.getElementById('<?php echo esc_js($unique_id); ?>');
+
+        // Delay geolocation request slightly to speed up the initial page load
+        setTimeout(function() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    function(position) {
+                        var lat = position.coords.latitude;
+                        var lon = position.coords.longitude;
+
+                        // Use a faster API like BigDataCloud or Positionstack
+                        fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`)
+                            .then(response => response.json())
+                            .then(data => {
+                                var city = data.city || 'Unknown city';
+                                cityElement.innerText = city;
+                                cityElement.style.display = 'inline';
+                            })
+                            .catch(error => {
+                                console.error(error);
+                                cityElement.style.display = 'inline';
+                            });
+                    },
+                    function(error) {
+                        console.error(error);
+                        cityElement.style.display = 'inline';
+                    }
+                );
+            } else {
+                console.error('Geolocation is not supported by this browser.');
+                cityElement.style.display = 'inline';
+            }
+        }, 100); // Delaying geolocation request by 100ms
+    });
+    </script>
+    <?php
+    return ob_get_clean();
+}
